@@ -1,72 +1,90 @@
 # File: backend/app/services/file_service.py
-# Status: COMPLETE
-# Dependencies: fastapi, fastapi.uploadfile, app.core.config
-
 import os
-import shutil
-from typing import List
-from fastapi import UploadFile, HTTPException
-from app.core.config import settings
 import uuid
+import logging
+from typing import List
+from fastapi import UploadFile
+from app.core.config import settings
 
-def validate_image(file: UploadFile) -> bool:
-    """
-    Validate if the file is an allowed image type.
-    """
-    return file.content_type in settings.ALLOWED_IMAGE_TYPES
+logger = logging.getLogger(__name__)
 
-def save_upload(file: UploadFile, folder: str = "general") -> str:
+def save_upload(upload_file: UploadFile, folder: str = "properties") -> str:
     """
-    Save uploaded file to disk and return the file path.
-    """
-    if not validate_image(file):
-        raise HTTPException(
-            status_code=400, 
-            detail="File type not allowed. Allowed types: " + ", ".join(settings.ALLOWED_IMAGE_TYPES)
-        )
+    Save a single uploaded file to disk
     
-    # Create folder if it doesn't exist
-    folder_path = os.path.join(settings.UPLOAD_DIRECTORY, folder)
-    os.makedirs(folder_path, exist_ok=True)
+    Args:
+        upload_file: Uploaded file
+        folder: Subfolder within uploads directory
+        
+    Returns:
+        Relative path to saved file
+    """
+    # Make sure directory exists
+    directory = os.path.join(settings.UPLOAD_DIRECTORY, folder)
+    os.makedirs(directory, exist_ok=True)
     
     # Generate unique filename
-    file_extension = os.path.splitext(file.filename)[1]
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
+    ext = os.path.splitext(upload_file.filename)[1].lower() if upload_file.filename else ".jpg"
+    filename = f"{uuid.uuid4()}{ext}"
+    
+    # Full path to save the file
+    file_path = os.path.join(directory, filename)
+    
+    logger.info(f"Saving file to: {file_path}")
+    logger.info(f"Upload directory from settings: {settings.UPLOAD_DIRECTORY}")
+    logger.info(f"Upload file content type: {upload_file.content_type}")
     
     # Save file
-    file_path = os.path.join(folder_path, unique_filename)
-    
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    # Return relative path for database storage
-    relative_path = os.path.join("uploads", folder, unique_filename)
-    return relative_path
-
-def save_multiple_uploads(files: List[UploadFile], folder: str = "general") -> List[str]:
-    """
-    Save multiple uploaded files and return their paths.
-    """
-    paths = []
-    for file in files:
-        path = save_upload(file, folder)
-        paths.append(path)
-    return paths
-
-def delete_file(file_path: str) -> bool:
-    """
-    Delete a file from disk.
-    """
-    # Remove 'uploads/' prefix if present
-    if file_path.startswith("uploads/"):
-        file_path = file_path[8:]
-    
-    full_path = os.path.join(settings.UPLOAD_DIRECTORY, file_path)
-    
     try:
-        if os.path.exists(full_path):
-            os.remove(full_path)
-            return True
-        return False
-    except:
-        return False
+        contents = upload_file.file.read()
+        logger.info(f"Read {len(contents)} bytes from uploaded file")
+        
+        with open(file_path, "wb") as f:
+            f.write(contents)
+        
+        # Reset the file pointer for potential reuse
+        upload_file.file.seek(0)
+        
+        # Return the relative path that will be accessible via URL
+        relative_path = f"{folder}/{filename}"
+        logger.info(f"File saved successfully as: {relative_path}")
+        
+        # Verify file existence after save
+        if os.path.exists(file_path):
+            file_size = os.path.getsize(file_path)
+            logger.info(f"Verified file exists at {file_path} with size {file_size} bytes")
+        else:
+            logger.error(f"File not found at {file_path} after save operation!")
+            
+        return relative_path
+    except Exception as e:
+        logger.error(f"Error saving file {upload_file.filename}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+def save_multiple_uploads(uploads: List[UploadFile], folder: str = "properties") -> List[str]:
+    """
+    Save multiple uploaded files to disk
+    
+    Args:
+        uploads: List of uploaded files
+        folder: Subfolder within uploads directory
+        
+    Returns:
+        List of relative paths to saved files
+    """
+    logger.info(f"Saving {len(uploads)} files to folder: {folder}")
+    
+    saved_paths = []
+    for i, upload in enumerate(uploads):
+        try:
+            logger.info(f"Processing file {i+1}/{len(uploads)}: {upload.filename}")
+            path = save_upload(upload, folder)
+            saved_paths.append(path)
+        except Exception as e:
+            logger.error(f"Error saving file in batch: {str(e)}")
+            # Continue with other files even if one fails
+    
+    logger.info(f"Successfully saved {len(saved_paths)} files in {folder}")
+    return saved_paths

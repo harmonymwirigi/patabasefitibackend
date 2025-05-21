@@ -14,9 +14,9 @@ from app.services import file_service
 # Import property_service properly
 from app.services.property_service import property_service
 import json
-
+import logging
 router = APIRouter()
-
+logger = logging.getLogger(__name__)
 @router.get("/", response_model=List[PropertyListItem])
 def read_properties(
     db: Session = Depends(deps.get_db),
@@ -212,6 +212,9 @@ def upload_property_images(
     """
     Upload property images.
     """
+    logger.info(f"Uploading {len(images)} images for property {property_id}")
+    
+    # Verify property exists and user has permission
     property = crud.property.get(db, id=property_id)
     if not property:
         raise HTTPException(
@@ -224,35 +227,48 @@ def upload_property_images(
             detail="Not enough permissions",
         )
     
-    # Save images
-    file_paths = file_service.save_multiple_uploads(images, folder=f"property/{property_id}")
+    # Create folder structure for property images
+    folder = f"properties/{property_id}"
     
-    # Add to database
-    db_images = []
-    for i, path in enumerate(file_paths):
-        # Check if any image exists
-        existing_images = db.query(models.PropertyImage).filter(
-            models.PropertyImage.property_id == property_id
-        ).count()
+    try:
+        # Save images
+        file_paths = file_service.save_multiple_uploads(images, folder=folder)
+        logger.info(f"Saved {len(file_paths)} images for property {property_id}")
         
-        is_primary = existing_images == 0 and i == 0
+        # Add to database
+        db_images = []
+        for i, path in enumerate(file_paths):
+            # Check if any image exists
+            existing_images = db.query(models.PropertyImage).filter(
+                models.PropertyImage.property_id == property_id
+            ).count()
+            
+            is_primary = existing_images == 0 and i == 0
+            
+            db_image = models.PropertyImage(
+                property_id=property_id,
+                path=path,
+                is_primary=is_primary
+            )
+            db.add(db_image)
+            db_images.append(db_image)
         
-        db_image = models.PropertyImage(
-            property_id=property_id,
-            path=path,
-            is_primary=is_primary
+        db.commit()
+        
+        # Refresh to get IDs
+        for image in db_images:
+            db.refresh(image)
+        
+        return db_images
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error uploading images: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading images: {str(e)}"
         )
-        db.add(db_image)
-        db_images.append(db_image)
-    
-    db.commit()
-    
-    # Refresh to get IDs
-    for image in db_images:
-        db.refresh(image)
-    
-    return db_images
-
 @router.put("/{property_id}/status", response_model=Property)
 def update_property_status(
     *,

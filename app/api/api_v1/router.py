@@ -13,6 +13,7 @@ from app.api.api_v1.endpoints.payments import router as payments_router
 from app.api.api_v1.endpoints.subscriptions import router as subscriptions_router
 from app.api.api_v1.endpoints.verifications import router as verifications_router
 from app.api.api_v1.endpoints.admin import router as admin_router
+from app.api.api_v1.endpoints.debug import router as debug_router
 
 api_router = APIRouter()
 
@@ -25,3 +26,4 @@ api_router.include_router(payments_router, prefix="/payments", tags=["payments"]
 api_router.include_router(subscriptions_router, prefix="/subscriptions", tags=["subscriptions"])
 api_router.include_router(verifications_router, prefix="/verifications", tags=["verifications"])
 api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
+api_router.include_router(debug_router, prefix="/debug", tags=["debug"])

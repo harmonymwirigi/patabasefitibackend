@@ -80,6 +80,15 @@ class PropertyService:
                 "user_id": owner_id
             })
             
+            # Create a verification record for this property
+            verification = models.Verification(
+                property_id=property_obj.id,
+                verification_type="automatic",
+                status="pending",
+                expiration=datetime.utcnow() + timedelta(days=7)
+            )
+            db.add(verification)
+            
             # Commit everything
             db.commit()
             db.refresh(property_obj)
@@ -91,7 +100,41 @@ class PropertyService:
             import traceback
             traceback.print_exc()
             raise
-    
+    def create_verification_for_property(self, db: Session, property_id: int) -> bool:
+        """
+        Create a verification record for a property
+        
+        Args:
+            db: Database session
+            property_id: Property ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            from datetime import datetime, timedelta
+            
+            # Check if verification record already exists
+            existing_verification = db.query(models.Verification).filter(
+                models.Verification.property_id == property_id,
+                models.Verification.status == "pending"
+            ).first()
+            
+            if not existing_verification:
+                # Create a new verification record
+                verification = models.Verification(
+                    property_id=property_id,
+                    verification_type="automatic",
+                    status="pending",
+                    expiration=datetime.utcnow() + timedelta(days=7)
+                )
+                db.add(verification)
+                db.commit()
+                
+            return True
+        except Exception as e:
+            print(f"Error creating verification record: {e}")
+            return False
     def add_property_images(
         self, 
         db: Session, 

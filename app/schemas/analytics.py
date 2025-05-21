@@ -7,6 +7,61 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from app.schemas.base import BaseSchema, TimestampedSchema
 
+class AdminStats(BaseModel):
+    users: Dict[str, int]
+    properties: Dict[str, int]
+    transactions: Dict[str, Any]
+    subscriptions: Dict[str, int]
+    
+    class Config:
+        orm_mode = True
+
+class NeighborhoodCount(BaseModel):
+    name: str
+    count: int
+
+class PropertyTypeCount(BaseModel):
+    type: str
+    count: int
+
+class PropertyAnalytics(BaseModel):
+    newPropertiesCount: int
+    popularNeighborhoods: List[NeighborhoodCount]
+    propertyTypes: List[PropertyTypeCount]
+    
+    class Config:
+        orm_mode = True
+
+class RegistrationTrendPoint(BaseModel):
+    date: str
+    tenants: int
+    owners: int
+
+class UserRoleCount(BaseModel):
+    role: str
+    count: int
+
+class UserAnalytics(BaseModel):
+    activeUsers: int
+    registrationTrend: List[RegistrationTrendPoint]
+    usersByRole: List[UserRoleCount]
+    
+    class Config:
+        orm_mode = True
+class RevenueTrendPoint(BaseModel):
+    date: str
+    amount: float
+
+class RevenueSourceAmount(BaseModel):
+    source: str
+    amount: float
+
+class RevenueAnalytics(BaseModel):
+    revenueTrend: List[RevenueTrendPoint]
+    revenueBySource: List[RevenueSourceAmount]
+    
+    class Config:
+        orm_mode = True
 # Search history
 class SearchHistory(BaseSchema):
     id: int

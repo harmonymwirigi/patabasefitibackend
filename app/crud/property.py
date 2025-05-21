@@ -8,10 +8,138 @@ import datetime
 import json
 
 from app.crud.base import CRUDBase
-from app.models import Property, PropertyImage, PropertyAmenity
+from app.models import Verification, VerificationHistory, Property, User,PropertyImage, PropertyAmenity
 from app.schemas.property import PropertyCreate, PropertyUpdate
-
+from app.schemas.verification import VerificationCreate, VerificationUpdate
 class CRUDProperty(CRUDBase[Property, PropertyCreate, PropertyUpdate]):
+    def get(self, db: Session, id: int) -> Optional[Verification]:
+        return db.query(Verification).filter(Verification.id == id).first()
+    
+    def get_multi(
+        self, db: Session, *, skip: int = 0, limit: int = 100
+    ) -> List[Verification]:
+        return db.query(Verification).offset(skip).limit(limit).all()
+    
+    def get_pending_verifications(
+        self, db: Session, *, skip: int = 0, limit: int = 100
+    ) -> List[Verification]:
+        """Get pending property verifications with eager loading of related data"""
+        return db.query(Verification).filter(
+            Verification.status == "pending"
+        ).offset(skip).limit(limit).all()
+    
+    def get_property_verifications(
+        self, db: Session, *, property_id: int, skip: int = 0, limit: int = 100
+    ) -> List[Verification]:
+        """Get verifications for a specific property"""
+        return db.query(Verification).filter(
+            Verification.property_id == property_id
+        ).order_by(Verification.requested_at.desc()).offset(skip).limit(limit).all()
+    
+
+    def create(
+        self, db: Session, *, obj_in: VerificationCreate
+    ) -> Verification:
+        """Create a new verification request"""
+        # Check if the property exists
+        property_exists = db.query(Property).filter(
+            Property.id == obj_in.property_id
+        ).first()
+        
+        if not property_exists:
+            raise ValueError(f"Property with ID {obj_in.property_id} does not exist")
+        
+        # Create the verification request
+        db_obj = Verification(
+            property_id=obj_in.property_id,
+            verification_type=obj_in.verification_type,
+            status=obj_in.status,
+            expiration=obj_in.expiration,
+        )
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
+    def update(
+        self, db: Session, *, db_obj: Verification, obj_in: VerificationUpdate
+    ) -> Verification:
+        """Update a verification request"""
+        # Convert to dict if it's a Pydantic model
+        update_data = obj_in if isinstance(obj_in, dict) else obj_in.dict(exclude_unset=True)
+        
+        # Update fields
+        for field, value in update_data.items():
+            setattr(db_obj, field, value)
+        
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
+    
+    def create_history_entry(
+        self, db: Session, *, property_id: int, status: str, verified_by: str, notes: Optional[str] = None
+    ) -> VerificationHistory:
+        """Create verification history entry"""
+        # Check if the property exists
+        property_exists = db.query(Property).filter(
+            Property.id == property_id
+        ).first()
+        
+        if not property_exists:
+            raise ValueError(f"Property with ID {property_id} does not exist")
+        
+        # Create history entry
+        history_entry = VerificationHistory(
+            property_id=property_id,
+            status=status,
+            verified_by=verified_by,
+            notes=notes
+        )
+        db.add(history_entry)
+        db.commit()
+        db.refresh(history_entry)
+        return history_entry
+    
+    def admin_verify(
+        self, db: Session, *, verification_id: int, admin_id: int, status: str, notes: Optional[str] = None
+    ) -> Verification:
+        """Admin verification of a property"""
+        # Get verification
+        verification = db.query(Verification).filter(
+            Verification.id == verification_id
+        ).first()
+        
+        if not verification:
+            raise ValueError(f"Verification with ID {verification_id} not found")
+        
+        # Update verification
+        verification.status = status
+        verification.responder_id = admin_id
+        
+        # Create response data JSON
+        response_data = {
+            "admin_id": admin_id,
+            "status": status,
+            "notes": notes,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        verification.set_response_json(response_data)
+        
+        db.add(verification)
+        db.commit()
+        db.refresh(verification)
+        return verification
+    
+    def get_expired_verifications(
+        self, db: Session, *, skip: int = 0, limit: int = 100
+    ) -> List[Verification]:
+        """Get expired verification requests"""
+        now = datetime.utcnow()
+        return db.query(Verification).filter(
+            Verification.status == "pending",
+            Verification.expiration < now
+        ).offset(skip).limit(limit).all()
+
     def create_with_owner_without_commit(
         self, db: Session, *, obj_in: PropertyCreate, owner_id: int
     ) -> Property:
