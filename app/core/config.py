@@ -21,7 +21,18 @@ class Settings:
     SECRET_KEY: str = os.getenv("SECRET_KEY", DEFAULT_SECRET_KEY)
     ALGORITHM: str = os.getenv("ALGORITHM", DEFAULT_ALGORITHM)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES))
+    GOOGLE_MAPS_API_KEY: Optional[str] = os.getenv("GOOGLE_MAPS_API_KEY")
+    OPENCAGE_API_KEY: Optional[str] = os.getenv("OPENCAGE_API_KEY")
     
+    # Geocoding settings
+    GEOCODING_PROVIDER: str = os.getenv("GEOCODING_PROVIDER", "nominatim")  # nominatim, google, opencage
+    GEOCODING_TIMEOUT: int = int(os.getenv("GEOCODING_TIMEOUT", "10"))
+    
+    # Map settings
+    DEFAULT_MAP_ZOOM: int = int(os.getenv("DEFAULT_MAP_ZOOM", "15"))
+    MAP_CENTER_LAT: float = float(os.getenv("MAP_CENTER_LAT", "-1.2921"))  # Nairobi
+    MAP_CENTER_LNG: float = float(os.getenv("MAP_CENTER_LNG", "36.8219"))  # Nairobi
+
     # CORS settings - hardcoded for now to avoid parsing issues
     BACKEND_CORS_ORIGINS: List[str] = [
         "http://localhost:5173",

@@ -4,7 +4,9 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 import datetime
 import json
-
+import builtins  # Add this import
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, or_, func
+from sqlalchemy.orm import relationship
 from app.db.database import Base
 
 class BaseJsonMixin:
@@ -61,7 +63,7 @@ class Property(Base):
     # Relationships
     owner = relationship("User", back_populates="properties")
     images = relationship("PropertyImage", back_populates="property", cascade="all, delete-orphan")
-    verifications = relationship("Verification", back_populates="property", cascade="all, delete-orphan")
+    verifications = relationship("Verification", back_populates="related_property", cascade="all, delete-orphan")
     verification_history = relationship("VerificationHistory", back_populates="property", cascade="all, delete-orphan")
     favorites = relationship("PropertyFavorite", back_populates="property", cascade="all, delete-orphan")
     views = relationship("ViewedProperty", back_populates="property", cascade="all, delete-orphan")
@@ -223,14 +225,14 @@ class Verification(Base):
     status = Column(String(50), default="pending")
     responder_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     expiration = Column(DateTime, nullable=True)
-    response_data = Column(Text, nullable=True)
-    system_decision = Column(Text, nullable=True)
+    response_data = Column(Text, nullable=True, default='{}')
+    system_decision = Column(Text, nullable=True, default='{}')
     
     # Relationships
-    property = relationship("Property", back_populates="verifications")
+    related_property = relationship("Property", back_populates="verifications")  # Renamed to avoid conflict
     responder = relationship("User")
     
-    # JSON methods instead of properties
+    # JSON methods
     def get_response_json(self):
         try:
             return json.loads(self.response_data) if self.response_data else {}
@@ -238,7 +240,12 @@ class Verification(Base):
             return {}
     
     def set_response_json(self, value):
-        self.response_data = json.dumps(value) if value else '{}'
+        if value is None:
+            self.response_data = '{}'
+        elif isinstance(value, dict):
+            self.response_data = json.dumps(value)
+        else:
+            self.response_data = value
     
     def get_system_decision_json(self):
         try:
@@ -247,7 +254,17 @@ class Verification(Base):
             return {}
     
     def set_system_decision_json(self, value):
-        self.system_decision = json.dumps(value) if value else '{}'
+        if value is None:
+            self.system_decision = '{}'
+        elif isinstance(value, dict):
+            self.system_decision = json.dumps(value)
+        else:
+            self.system_decision = value
+    
+    # Properties to handle JSON fields using Python's built-in property() function
+    # (renamed to avoid conflict with SQLAlchemy's relationship)
+    response_json = builtins.property(get_response_json, set_response_json)
+    system_decision_json = builtins.property(get_system_decision_json, set_system_decision_json)
 
 class VerificationHistory(Base):
     __tablename__ = "verification_history"

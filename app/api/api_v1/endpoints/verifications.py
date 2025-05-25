@@ -1,6 +1,6 @@
 # File: backend/app/api/api_v1/endpoints/verifications.py
-# Status: COMPLETE
-# Dependencies: fastapi, app.crud.verification, app.services.verification_service
+# Update the entire file with proper response models
+
 from typing import Any, List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status, UploadFile, File, Form
 from sqlalchemy.orm import Session, joinedload
@@ -10,11 +10,11 @@ from app.schemas.verification import Verification, VerificationCreate, Verificat
 from app import crud, models
 from app.api import deps
 
-
 from app import crud, models, schemas
 from app.services import file_service
 
 router = APIRouter()
+
 @router.get("/", response_model=List[Verification])
 def get_verifications(
     db: Session = Depends(deps.get_db),
@@ -133,7 +133,6 @@ def get_verification_history(
     ).order_by(models.VerificationHistory.timestamp.desc()).offset(skip).limit(limit).all()
     
     return history
-
 @router.get("/pending", response_model=List[schemas.verification.Verification])
 def get_pending_verifications(
     *,
@@ -145,31 +144,71 @@ def get_pending_verifications(
     """
     Get pending verifications for properties owned by the current user.
     """
-    # Get user's properties
-    properties = crud.property.get_multi_by_owner(
-        db, owner_id=current_user.id, skip=0, limit=1000
+    # Get all pending verifications directly with a join
+    pending_verifications = (
+        db.query(models.Verification)
+        .join(models.Property, models.Verification.property_id == models.Property.id)
+        .filter(
+            models.Property.owner_id == current_user.id,
+            models.Verification.status == "pending"
+        )
+        .order_by(models.Verification.requested_at)
+        .offset(skip)
+        .limit(limit)
+        .all()
     )
     
-    if not properties:
-        return []
+    # Convert result for API response
+    result = []
+    for verification in pending_verifications:
+        # Add property data
+        property_obj = db.query(models.Property).get(verification.property_id)
+        if property_obj:
+            verification_dict = {
+                "id": verification.id,
+                "property_id": verification.property_id,
+                "verification_type": verification.verification_type,
+                "requested_at": verification.requested_at,
+                "status": verification.status,
+                "responder_id": verification.responder_id,
+                "expiration": verification.expiration,
+                "response_data": verification.get_response_json(),
+                "system_decision": verification.get_system_decision_json(),
+                "property": {
+                    "id": property_obj.id,
+                    "title": property_obj.title,
+                    "property_type": property_obj.property_type,
+                    "rent_amount": property_obj.rent_amount,
+                    "bedrooms": property_obj.bedrooms,
+                    "bathrooms": property_obj.bathrooms,
+                    "address": property_obj.address,
+                    "city": property_obj.city,
+                    "neighborhood": property_obj.neighborhood,
+                    "verification_status": property_obj.verification_status,
+                    "availability_status": property_obj.availability_status,
+                    "images": []  # We'll add images below
+                }
+            }
+            
+            # Add images
+            property_images = db.query(models.PropertyImage).filter(
+                models.PropertyImage.property_id == property_obj.id
+            ).all()
+            
+            verification_dict["property"]["images"] = [
+                {
+                    "id": img.id,
+                    "property_id": img.property_id,
+                    "path": img.path,
+                    "is_primary": img.is_primary,
+                    "uploaded_at": img.uploaded_at
+                }
+                for img in property_images
+            ]
+            
+            result.append(verification_dict)
     
-    property_ids = [prop.id for prop in properties]
-    
-    # Get pending verifications for these properties
-    pending_verifications = []
-    for property_id in property_ids:
-        verifications = crud.verification.get_property_verifications(
-            db, property_id=property_id, skip=0, limit=5
-        )
-        
-        for verification in verifications:
-            if verification.status == "pending":
-                pending_verifications.append(verification)
-    
-    # Sort by requested_at and apply pagination
-    pending_verifications.sort(key=lambda x: x.requested_at)
-    
-    return pending_verifications[skip:skip+limit]
+    return result
 
 @router.get("/{verification_id}", response_model=Verification)
 def get_verification(
@@ -197,6 +236,9 @@ def get_verification(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not enough permissions",
         )
+    
+    # Make sure property is loaded for the schema
+    verification.property = property
     
     return verification
 
@@ -230,6 +272,10 @@ def update_verification(
     
     # Update verification
     verification = crud.verification.update(db, db_obj=verification, obj_in=verification_in)
+    
+    # Make sure property is loaded for the schema
+    verification.property = property
+    
     return verification
 
 @router.post("/respond/{verification_id}", response_model=Verification)
@@ -283,6 +329,9 @@ def respond_to_verification(
         notes=f"Owner responded to verification request: {response[:100]}..."
     )
     
+    # Make sure property is loaded for the schema
+    verification.property = property
+    
     return verification
 
 @router.post("/request/{property_id}", response_model=Verification)
@@ -326,48 +375,7 @@ def request_verification(
         notes=f"Verification requested: {verification_type}"
     )
     
-    return verification
-
-@router.post("/{verification_id}/evidence", response_model=schemas.verification.Verification)
-def upload_verification_evidence(
-    *,
-    db: Session = Depends(deps.get_db),
-    verification_id: int,
-    files: List[UploadFile] = File(...),
-    current_user: models.User = Depends(deps.get_current_owner_user),
-) -> Any:
-    """
-    Upload evidence for verification.
-    """
-    verification = crud.verification.get(db, id=verification_id)
-    if not verification:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Verification not found",
-        )
-    
-    # Check if property belongs to user
-    property = crud.property.get(db, id=verification.property_id)
-    if not property or property.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Property not owned by current user",
-        )
-    
-    # Save evidence files
-    file_paths = file_service.save_multiple_uploads(files, folder=f"verification/{verification_id}")
-    
-    # Update verification response with file paths
-    response = verification.response_json if verification.response else {}
-    if "evidence_files" not in response:
-        response["evidence_files"] = []
-    
-    response["evidence_files"].extend(file_paths)
-    
-    verification = crud.verification.update(
-        db,
-        db_obj=verification,
-        obj_in={"response": response}
-    )
+    # Make sure property is loaded for the schema
+    verification.property = property
     
     return verification

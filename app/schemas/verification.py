@@ -1,11 +1,19 @@
 # File: backend/app/schemas/verification.py
-# Status: COMPLETE
-# Dependencies: pydantic, app.schemas.base
+# Updated to work with the model changes
+
 from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel, Field, validator, ConfigDict
 from datetime import datetime
 import json
 from app.schemas.base import BaseSchema, TimestampedSchema
+
+
+class VerificationPropertyImage(BaseSchema):
+    id: int
+    property_id: int
+    path: str
+    is_primary: bool
+    uploaded_at: datetime
 # Verification model
 class VerificationBase(BaseSchema):
     property_id: int
@@ -20,6 +28,19 @@ class VerificationBase(BaseSchema):
     # Validators for JSON fields that might come as strings
     @validator('response_data', pre=True)
     def parse_response_data(cls, v):
+        if v is None:
+            return {}
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                return {}
+        return v
+
+    @validator('system_decision', pre=True)
+    def parse_system_decision(cls, v):
+        if v is None:
+            return {}
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -43,6 +64,8 @@ class VerificationUpdate(BaseSchema):
     # Validators for JSON fields
     @validator('response_data', pre=True)
     def parse_response_data(cls, v):
+        if v is None:
+            return {}
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -52,12 +75,15 @@ class VerificationUpdate(BaseSchema):
 
     @validator('system_decision', pre=True)
     def parse_system_decision(cls, v):
+        if v is None:
+            return {}
         if isinstance(v, str):
             try:
                 return json.loads(v)
             except json.JSONDecodeError:
                 return {}
         return v
+
 class VerificationOwner(BaseSchema):
     id: int
     full_name: str
@@ -74,9 +100,16 @@ class VerificationProperty(BaseSchema):
     city: str
     neighborhood: Optional[str] = None
     owner: Optional[VerificationOwner] = None
+    verification_status: str
+    availability_status: str
     
-    # Include simplified images array
-    images: List[Dict[str, Any]] = []
+    # Use the specific image schema for the images array
+    images: List[VerificationPropertyImage] = []
+    
+    class Config:
+        orm_mode = True
+        from_attributes = True
+
 # Verification in DB with all properties
 class VerificationInDBBase(VerificationBase):
     id: int
@@ -102,13 +135,15 @@ class Verification(TimestampedSchema):
     # Include the property with key fields
     property: Optional[VerificationProperty] = None
     
-    # JSON fields with parsing
+    # JSON fields with parsing - default to empty dict instead of None
     response_data: Dict[str, Any] = {}
     system_decision: Dict[str, Any] = {}
     
     # Validators for JSON fields
     @validator('response_data', pre=True)
     def parse_response_data(cls, v):
+        if v is None:
+            return {}
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -118,6 +153,8 @@ class Verification(TimestampedSchema):
 
     @validator('system_decision', pre=True)
     def parse_system_decision(cls, v):
+        if v is None:
+            return {}
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -127,6 +164,7 @@ class Verification(TimestampedSchema):
 
     class Config:
         orm_mode = True
+        from_attributes = True
 
 # Verification history
 class VerificationHistory(BaseSchema):
@@ -139,6 +177,7 @@ class VerificationHistory(BaseSchema):
 
     class Config:
         orm_mode = True
+        from_attributes = True
 
 # Verification response from the property owner
 class VerificationResponse(BaseModel):

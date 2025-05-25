@@ -1,3 +1,4 @@
+# backend/app/api/deps.py
 # For backwards compatibility, we are re-exporting the dependencies here
 from app.core.dependencies import (
     get_current_user,

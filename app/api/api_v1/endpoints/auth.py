@@ -1,6 +1,5 @@
 # File: backend/app/api/api_v1/endpoints/auth.py
-# Status: FIXED
-# Dependencies: fastapi, app.crud.user, app.services.auth_service, app.services.user_service
+# Updated to handle role selection for Google users
 
 from datetime import timedelta
 from typing import Any, Dict
@@ -23,9 +22,9 @@ from app.services.user_service import user_service
 # Import specific schema modules directly
 from app.schemas.user import UserCreate, UserWithToken, User
 from app.schemas.token import Token, GoogleToken, TokenResponse
+from app.schemas.auth import GoogleAuthWithRole, GoogleVerifyResponse
 
 router = APIRouter()
-
 
 @router.post("/register", response_model=UserWithToken)
 def register(
@@ -132,17 +131,17 @@ def login(
             detail=f"Error during login: {str(e)}"
         )
 
-@router.post("/google", response_model=TokenResponse)
-async def google_auth(
+@router.post("/google/verify", response_model=Dict[str, Any])
+async def google_verify_token(
     token: GoogleToken,
     db: Session = Depends(get_db)
 ):
     """
-    Authenticate with Google OAuth token.
+    Verify Google token and return user info.
+    If user exists, return user data. If not, return user info for role selection.
     """
     try:
-        print(f"Received Google auth request with token: {token.token[:15]}...")
-        print(f"Using Google Client ID: {settings.GOOGLE_CLIENT_ID}")
+        print(f"Verifying Google token: {token.token[:15]}...")
         
         # Verify Google token
         try:
@@ -164,18 +163,95 @@ async def google_auth(
         # Extract user info from token
         email = idinfo.get("email")
         if not email:
-            print("Email not found in token payload")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email not found in Google token",
             )
         
-        print(f"Looking up user with email: {email}")
+        # Check if user exists
+        user = crud.user.get_by_email(db, email=email)
+        
+        if user:
+            # User exists, return success with user data
+            return {
+                "user_exists": True,
+                "user_info": {
+                    "email": email,
+                    "name": idinfo.get("name", "Google User"),
+                    "picture": idinfo.get("picture"),
+                    "google_id": idinfo.get("sub")
+                },
+                "user_data": user_service.get_user_profile(db, user.id)
+            }
+        else:
+            # User doesn't exist, return user info for role selection
+            return {
+                "user_exists": False,
+                "user_info": {
+                    "email": email,
+                    "name": idinfo.get("name", "Google User"),
+                    "picture": idinfo.get("picture"),
+                    "google_id": idinfo.get("sub")
+                },
+                "needs_role_selection": True
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Unexpected error in google_verify_token: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error verifying Google token: {str(e)}",
+        )
+
+@router.post("/google/complete", response_model=TokenResponse)
+async def google_complete_registration(
+    auth_data: GoogleAuthWithRole,
+    db: Session = Depends(get_db)
+):
+    """
+    Complete Google authentication with role selection.
+    """
+    try:
+        print(f"Completing Google auth with role: {auth_data.role}")
+        
+        # Verify Google token again
+        try:
+            req = requests.Request()
+            idinfo = id_token.verify_oauth2_token(
+                auth_data.token, 
+                req, 
+                settings.GOOGLE_CLIENT_ID
+            )
+        except Exception as token_error:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid Google token: {str(token_error)}",
+            )
+        
+        email = idinfo.get("email")
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email not found in Google token",
+            )
+        
+        # Validate role
+        if auth_data.role not in ['tenant', 'owner']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid role. Must be 'tenant' or 'owner'",
+            )
+        
         # Check if user exists
         user = crud.user.get_by_email(db, email=email)
         
         if not user:
-            print(f"User not found, creating new user with email: {email}")
+            # Create new user with selected role
+            print(f"Creating new user with role: {auth_data.role}")
+            
             # Generate a random password for the user
             random_password = security.generate_random_password()
             
@@ -184,7 +260,7 @@ async def google_auth(
                 email=email,
                 full_name=idinfo.get("name", "Google User"),
                 password=random_password,
-                role="tenant",  # Default role
+                role=auth_data.role,  # Use the selected role
             )
             
             # Create the user
@@ -194,39 +270,22 @@ async def google_auth(
             sql = text("UPDATE users SET auth_type = :auth_type, google_id = :google_id WHERE id = :user_id")
             db.execute(sql, {
                 "auth_type": "google",
-                "google_id": idinfo.get("sub"),  # Google's unique user ID
-                "user_id": user.id
-            })
-            db.commit()
-            
-            print(f"New user created with ID: {user.id}")
-        elif user.auth_type != "google":
-            print(f"Updating user auth type to 'google' for user: {user.id}")
-            # Update user auth type using direct SQL
-            sql = text("UPDATE users SET auth_type = :auth_type, google_id = :google_id WHERE id = :user_id")
-            db.execute(sql, {
-                "auth_type": "google",
                 "google_id": idinfo.get("sub"),
                 "user_id": user.id
             })
             db.commit()
-            print(f"User auth type updated successfully")
+            
+            print(f"New user created with ID: {user.id} and role: {auth_data.role}")
         
-        print(f"Creating access token for user: {user.id}")
         # Create access token
         access_token = security.create_access_token(user.id)
-        print(f"Access token created successfully")
         
-        print(f"Updating last login for user: {user.id}")
-        # Update last login using user_service
+        # Update last login
         user_service.update_last_login(db, user_id=user.id)
-        print(f"Last login updated successfully")
         
-        # Refresh user object to get updated data
+        # Get user profile
         user_dict = user_service.get_user_profile(db, user.id)
         
-        print(f"Preparing response for user: {user.id}")
-        # Create the response that matches the expected TokenResponse schema
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -239,15 +298,56 @@ async def google_auth(
         }
         
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
-    except ValueError as e:
-        print(f"ValueError in google_auth: {str(e)}")
+    except Exception as e:
+        print(f"Unexpected error in google_complete_registration: {str(e)}")
         traceback.print_exc()
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid Google token: {str(e)}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error completing Google authentication: {str(e)}",
         )
+
+@router.post("/google", response_model=TokenResponse)
+async def google_auth(
+    token: GoogleToken,
+    db: Session = Depends(get_db)
+):
+    """
+    Legacy Google auth endpoint for existing users.
+    """
+    try:
+        # First verify the token
+        verify_response = await google_verify_token(token, db)
+        
+        if verify_response["user_exists"]:
+            # User exists, complete login
+            user_data = verify_response["user_data"]
+            
+            # Create access token
+            access_token = security.create_access_token(user_data["id"])
+            
+            # Update last login
+            user_service.update_last_login(db, user_id=user_data["id"])
+            
+            return {
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user": {
+                    "id": user_data["id"],
+                    "email": user_data["email"],
+                    "full_name": user_data["full_name"], 
+                    "role": user_data["role"]
+                }
+            }
+        else:
+            # User doesn't exist, need role selection
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New user detected. Please use the role selection flow.",
+            )
+        
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Unexpected error in google_auth: {str(e)}")
         traceback.print_exc()
@@ -255,7 +355,6 @@ async def google_auth(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing Google authentication: {str(e)}",
         )
-
 
 @router.post("/logout")
 def logout() -> Any:
@@ -274,6 +373,14 @@ async def options_login():
 
 @router.options("/google", include_in_schema=False)
 async def options_google():
+    return {}
+
+@router.options("/google/verify", include_in_schema=False)
+async def options_google_verify():
+    return {}
+
+@router.options("/google/complete", include_in_schema=False)
+async def options_google_complete():
     return {}
 
 @router.options("/logout", include_in_schema=False)

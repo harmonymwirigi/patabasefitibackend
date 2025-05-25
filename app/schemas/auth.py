@@ -1,8 +1,7 @@
 # File: backend/app/schemas/auth.py
-# Status: UPDATED - Added GoogleAuthRequest
-# Dependencies: pydantic, app.schemas.base
+# Updated to include GoogleAuthWithRole
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, validator
 from typing import Optional
 from app.schemas.base import BaseSchema
 
@@ -37,3 +36,22 @@ class PasswordReset(BaseSchema):
 # Google OAuth authentication request
 class GoogleAuthRequest(BaseSchema):
     token: str
+
+# Google OAuth authentication with role selection
+class GoogleAuthWithRole(BaseSchema):
+    token: str
+    role: str
+    
+    @validator('role')
+    def validate_role(cls, v):
+        allowed_roles = ["tenant", "owner"]
+        if v not in allowed_roles:
+            raise ValueError(f"Role must be one of {allowed_roles}")
+        return v
+
+# Google token verification response
+class GoogleVerifyResponse(BaseSchema):
+    user_exists: bool
+    user_info: dict
+    needs_role_selection: Optional[bool] = None
+    user_data: Optional[dict] = None

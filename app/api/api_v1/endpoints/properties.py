@@ -17,18 +17,78 @@ import json
 import logging
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
 @router.get("/", response_model=List[PropertyListItem])
 def read_properties(
     db: Session = Depends(deps.get_db),
     skip: int = 0,
     limit: int = 100,
+    owner_id: Optional[int] = None,  # Add owner_id parameter
     current_user: Optional[models.User] = Depends(deps.get_current_active_user),
 ) -> Any:
     """
     Retrieve properties with pagination.
+    
+    Optionally filter by owner_id if provided.
     """
-    properties = crud.property.get_multi(db, skip=skip, limit=limit)
-    return properties
+    # Import logging to add debug info
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"Getting properties with params: owner_id={owner_id}, skip={skip}, limit={limit}")
+    
+    try:
+        if owner_id is not None:
+            # Get properties by owner
+            logger.info(f"Fetching properties for owner_id: {owner_id}")
+            # Make sure we're using the Property model, not Verification!
+            properties = db.query(models.Property).filter(
+                models.Property.owner_id == owner_id
+            ).order_by(models.Property.created_at.desc()).offset(skip).limit(limit).all()
+            
+            logger.info(f"Found {len(properties)} properties for owner_id: {owner_id}")
+        else:
+            # Get all properties
+            logger.info("Fetching all properties")
+            # Make sure we're using the Property model, not Verification!
+            properties = db.query(models.Property).order_by(
+                models.Property.created_at.desc()
+            ).offset(skip).limit(limit).all()
+            
+            logger.info(f"Found {len(properties)} properties")
+        
+        # For each property, add a main_image attribute
+        for prop in properties:
+            # Find the primary image or first image
+            primary_image = db.query(models.PropertyImage).filter(
+                models.PropertyImage.property_id == prop.id,
+                models.PropertyImage.is_primary == True
+            ).first()
+            
+            if not primary_image:
+                # If no primary image, get the first image
+                primary_image = db.query(models.PropertyImage).filter(
+                    models.PropertyImage.property_id == prop.id
+                ).first()
+            
+            # Set the main_image property
+            if primary_image:
+                prop.main_image = primary_image.path
+            else:
+                prop.main_image = None
+        
+        # Return processed properties
+        return properties
+        
+    except Exception as e:
+        logger.error(f"Error in read_properties: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving properties: {str(e)}"
+        )
 
 @router.post("/", response_model=Property)
 def create_property(
@@ -64,29 +124,96 @@ def read_property(
     current_user: Optional[models.User] = Depends(deps.get_current_active_user),
 ) -> Any:
     """
-    Get property by ID.
+    Get property by ID with enhanced error handling for location data.
     """
-    property = crud.property.get(db, id=property_id)
-    if not property:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Property not found",
-        )
-    
-    # Update view count
-    crud.property.update_engagement_metrics(db, property_id=property_id, metric_type="view")
-    
-    # If user is logged in, check if property is in favorites
-    if current_user:
+    try:
+        property = crud.property.get(db, id=property_id)
+        if not property:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Property not found",
+            )
+        
+        # Update view count safely
+        try:
+            crud.property.update_engagement_metrics(db, property_id=property_id, metric_type="view")
+        except Exception as e:
+            # Log the error but don't fail the request
+            logger.warning(f"Failed to update engagement metrics for property {property_id}: {e}")
+        
+        # Convert to dict for manipulation
         property_dict = jsonable_encoder(property)
-        favorite = db.query(models.PropertyFavorite).filter(
-            models.PropertyFavorite.user_id == current_user.id,
-            models.PropertyFavorite.property_id == property_id
-        ).first()
-        property_dict["is_favorite"] = favorite is not None
+        
+        # Safely handle coordinates - ensure they're valid numbers
+        if property_dict.get('latitude') is not None:
+            try:
+                property_dict['latitude'] = float(property_dict['latitude'])
+            except (TypeError, ValueError):
+                property_dict['latitude'] = None
+                
+        if property_dict.get('longitude') is not None:
+            try:
+                property_dict['longitude'] = float(property_dict['longitude'])
+            except (TypeError, ValueError):
+                property_dict['longitude'] = None
+        
+        # Validate coordinates are within reasonable bounds for Kenya
+        lat = property_dict.get('latitude')
+        lng = property_dict.get('longitude')
+        
+        if lat is not None and lng is not None:
+            # Basic validation for Kenya bounds
+            if not (-5.0 <= lat <= 5.0 and 33.5 <= lng <= 42.0):
+                logger.warning(f"Property {property_id} has coordinates outside Kenya bounds: {lat}, {lng}")
+                # Keep the coordinates but add a warning flag
+                property_dict['location_warning'] = "Coordinates may be outside Kenya"
+        
+        # Parse JSON fields safely
+        for json_field in ['amenities', 'lease_terms', 'engagement_metrics', 'auto_verification_settings', 'featured_status']:
+            field_value = property_dict.get(json_field)
+            if isinstance(field_value, str):
+                try:
+                    property_dict[json_field] = json.loads(field_value)
+                except json.JSONDecodeError:
+                    # Set default values for each field type
+                    if json_field == 'amenities':
+                        property_dict[json_field] = []
+                    elif json_field == 'engagement_metrics':
+                        property_dict[json_field] = {"view_count": 0, "favorite_count": 0, "contact_count": 0}
+                    elif json_field == 'auto_verification_settings':
+                        property_dict[json_field] = {"enabled": True, "frequency_days": 7}
+                    elif json_field == 'featured_status':
+                        property_dict[json_field] = {"is_featured": False}
+                    else:
+                        property_dict[json_field] = {} if json_field == 'lease_terms' else []
+        
+        # If user is logged in, check if property is in favorites
+        if current_user:
+            try:
+                favorite = db.query(models.PropertyFavorite).filter(
+                    models.PropertyFavorite.user_id == current_user.id,
+                    models.PropertyFavorite.property_id == property_id
+                ).first()
+                property_dict["is_favorite"] = favorite is not None
+            except Exception as e:
+                logger.warning(f"Failed to check favorite status for property {property_id}: {e}")
+                property_dict["is_favorite"] = False
+        else:
+            property_dict["is_favorite"] = False
+        
         return property_dict
-    
-    return property
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error retrieving property {property_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while retrieving the property"
+        )
 
 @router.put("/{property_id}", response_model=Property)
 def update_property(

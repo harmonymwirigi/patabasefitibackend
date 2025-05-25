@@ -12,8 +12,18 @@ from app.models import Verification, VerificationHistory, Property, User,Propert
 from app.schemas.property import PropertyCreate, PropertyUpdate
 from app.schemas.verification import VerificationCreate, VerificationUpdate
 class CRUDProperty(CRUDBase[Property, PropertyCreate, PropertyUpdate]):
-    def get(self, db: Session, id: int) -> Optional[Verification]:
+    def get(self, db: Session, id: int) -> Optional[Property]:
+        """Get a property by ID"""
+        # Make sure we're querying the Property model, not Verification
+        return db.query(Property).filter(Property.id == id).first()
+    def get_property_verification(self, db: Session, id: int) -> Optional[Verification]:
+        """Get a verification by ID - explicitly named to avoid confusion"""
         return db.query(Verification).filter(Verification.id == id).first()
+    def get_multi_verifications(
+        self, db: Session, *, skip: int = 0, limit: int = 100
+    ) -> List[Verification]:
+        """Get multiple verifications - explicitly named to avoid confusion"""
+        return db.query(Verification).offset(skip).limit(limit).all()
     
     def get_multi(
         self, db: Session, *, skip: int = 0, limit: int = 100
@@ -254,7 +264,8 @@ class CRUDProperty(CRUDBase[Property, PropertyCreate, PropertyUpdate]):
     def get_multi_by_owner(
         self, db: Session, *, owner_id: int, skip: int = 0, limit: int = 100
     ) -> List[Property]:
-        return (
+        """Get properties by owner_id"""
+        properties = (
             db.query(Property)
             .filter(Property.owner_id == owner_id)
             .order_by(desc(Property.created_at))
@@ -262,6 +273,28 @@ class CRUDProperty(CRUDBase[Property, PropertyCreate, PropertyUpdate]):
             .limit(limit)
             .all()
         )
+        
+        # For each property, add a main_image attribute
+        for prop in properties:
+            # Find the primary image or first image
+            primary_image = db.query(PropertyImage).filter(
+                PropertyImage.property_id == prop.id,
+                PropertyImage.is_primary == True
+            ).first()
+            
+            if not primary_image:
+                # If no primary image, get the first image
+                primary_image = db.query(PropertyImage).filter(
+                    PropertyImage.property_id == prop.id
+                ).first()
+            
+            # Set the main_image property
+            if primary_image:
+                prop.main_image = primary_image.path
+            else:
+                prop.main_image = None
+        
+        return properties
     
     def get_featured(
         self, db: Session, *, skip: int = 0, limit: int = 10
@@ -363,11 +396,14 @@ class CRUDProperty(CRUDBase[Property, PropertyCreate, PropertyUpdate]):
     def update_engagement_metrics(
         self, db: Session, *, property_id: int, metric_type: str
     ) -> Property:
-        property_obj = self.get(db, id=property_id)
-        if not property_obj:
-            return None
-            
+        """Update engagement metrics for a property"""
         try:
+            # Get the property explicitly from the Property table
+            property_obj = db.query(Property).filter(Property.id == property_id).first()
+            if not property_obj:
+                print(f"Property with ID {property_id} not found")
+                return None
+                
             # Get the current metrics
             if hasattr(property_obj, 'engagement_metrics_json'):
                 metrics = property_obj.engagement_metrics_json
