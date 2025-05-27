@@ -2,17 +2,16 @@
 # Status: FIXED
 # Dependencies: fastapi, app.crud.user, app.services.user_service
 
-from typing import Any, List
-from fastapi import APIRouter, Body, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Body, Depends, HTTPException, status, UploadFile, File, Form, Query
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
-
 from app.schemas.user import User, UserUpdate
 from app import crud, models
 from app.api import deps
 from app.services import file_service
 from app.services.user_service import user_service
-
+from typing import Any, List, Optional
+from sqlalchemy import or_, func
 router = APIRouter()
 
 @router.get("/me", response_model=User)
@@ -31,6 +30,81 @@ def read_user_me(
             detail="User not found",
         )
     return user_data
+
+@router.get("/search", response_model=List[User])
+def search_users(
+    *,
+    db: Session = Depends(deps.get_db),
+    current_user: models.User = Depends(deps.get_current_active_user),
+    q: str = Query(..., min_length=2, description="Search query"),
+    limit: int = Query(10, le=50, description="Maximum number of results")
+) -> Any:
+    """
+    Search users by name or email.
+    """
+    try:
+        # Search users by full name or email (case insensitive)
+        search_term = f"%{q.lower()}%"
+        
+        users = db.query(models.User).filter(
+            and_(
+                models.User.id != current_user.id,  # Exclude current user
+                models.User.account_status == "active",  # Only active users
+                or_(
+                    func.lower(models.User.full_name).like(search_term),
+                    func.lower(models.User.email).like(search_term)
+                )
+            )
+        ).limit(limit).all()
+        
+        return users
+        
+    except Exception as e:
+        print(f"Error searching users: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error searching users"
+        )
+
+@router.get("/by-role/{role}", response_model=List[User])
+def get_users_by_role(
+    *,
+    db: Session = Depends(deps.get_db),
+    current_user: models.User = Depends(deps.get_current_active_user),
+    role: str,
+    limit: int = Query(20, le=100, description="Maximum number of results")
+) -> Any:
+    """
+    Get users by role.
+    """
+    try:
+        valid_roles = ["tenant", "owner", "admin"]
+        if role not in valid_roles:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}"
+            )
+        
+        users = db.query(models.User).filter(
+            and_(
+                models.User.role == role,
+                models.User.account_status == "active",
+                models.User.id != current_user.id  # Exclude current user
+            )
+        ).limit(limit).all()
+        
+        return users
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting users by role: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error retrieving users"
+        )
 
 @router.put("/me", response_model=User)
 def update_user_me(

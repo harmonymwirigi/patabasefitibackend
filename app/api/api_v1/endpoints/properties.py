@@ -5,7 +5,7 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, status, UploadFile, File, Form, Query
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
-
+from datetime import datetime
 # Direct imports from schemas
 from app.schemas.property import PropertyCreate, Property, PropertyListItem, PropertyUpdate, PropertyImage, PropertySearch
 from app import crud, models
@@ -15,9 +15,12 @@ from app.services import file_service
 from app.services.property_service import property_service
 import json
 import logging
+from pydantic import BaseModel
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+class PropertyStatusUpdate(BaseModel):
+    status: str
 
 @router.get("/", response_model=List[PropertyListItem])
 def read_properties(
@@ -115,6 +118,7 @@ def create_property(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating property: {str(e)}"
         )
+
 
 @router.get("/{property_id}", response_model=Property)
 def read_property(
@@ -396,53 +400,158 @@ def upload_property_images(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error uploading images: {str(e)}"
         )
+    
+
 @router.put("/{property_id}/status", response_model=Property)
 def update_property_status(
     *,
     db: Session = Depends(deps.get_db),
     property_id: int,
-    availability_status: str = Body(..., embed=True),
+    status: str = Query(..., description="New availability status"),
     current_user: models.User = Depends(deps.get_current_active_user),
 ) -> Any:
     """
-    Update property availability status.
+    Update property availability status via query parameter.
     """
-    property = crud.property.get(db, id=property_id)
-    if not property:
+    try:
+        # Get the property
+        property_obj = db.query(models.Property).filter(
+            models.Property.id == property_id
+        ).first()
+        
+        if not property_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Property not found",
+            )
+        
+        # Check permissions
+        if property_obj.owner_id != current_user.id and not crud.user.is_admin(current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions",
+            )
+        
+        # Validate status
+        valid_statuses = ["available", "rented", "maintenance", "sold"]
+        if status not in valid_statuses:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}",
+            )
+        
+        # Update the property status
+        property_obj.availability_status = status
+        property_obj.updated_at = datetime.utcnow()
+        
+        db.add(property_obj)
+        db.commit()
+        db.refresh(property_obj)
+        
+        # Create verification history entry
+        try:
+            history_entry = models.VerificationHistory(
+                property_id=property_id,
+                status=status,
+                verified_by=f"owner_{current_user.id}",
+                notes=f"Status updated by owner to: {status}",
+                timestamp=datetime.utcnow()
+            )
+            db.add(history_entry)
+            db.commit()
+        except Exception as e:
+            # Log error but don't fail the main operation
+            logger.warning(f"Failed to create verification history: {e}")
+        
+        return property_obj
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating property status: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Property not found",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating property status: {str(e)}"
         )
-    if property.owner_id != current_user.id and not crud.user.is_admin(current_user):
+
+@router.post("/{property_id}/update-status", response_model=Property)
+def update_property_availability_status(
+    *,
+    db: Session = Depends(deps.get_db),
+    property_id: int,
+    status_update: PropertyStatusUpdate,
+    current_user: models.User = Depends(deps.get_current_active_user),
+) -> Any:
+    """
+    Update property availability status via POST request body.
+    """
+    try:
+        # Get the property
+        property_obj = db.query(models.Property).filter(
+            models.Property.id == property_id
+        ).first()
+        
+        if not property_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Property not found",
+            )
+        
+        # Check permissions
+        if property_obj.owner_id != current_user.id and not crud.user.is_admin(current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions",
+            )
+        
+        # Validate status
+        valid_statuses = ["available", "rented", "maintenance", "sold"]
+        if status_update.status not in valid_statuses:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}",
+            )
+        
+        # Update the property status
+        property_obj.availability_status = status_update.status
+        property_obj.updated_at = datetime.utcnow()
+        
+        db.add(property_obj)
+        db.commit()
+        db.refresh(property_obj)
+        
+        # Create verification history entry
+        try:
+            history_entry = models.VerificationHistory(
+                property_id=property_id,
+                status=status_update.status,
+                verified_by=f"owner_{current_user.id}",
+                notes=f"Status updated by owner to: {status_update.status}",
+                timestamp=datetime.utcnow()
+            )
+            db.add(history_entry)
+            db.commit()
+        except Exception as e:
+            # Log error but don't fail the main operation
+            logger.warning(f"Failed to create verification history: {e}")
+        
+        logger.info(f"Property {property_id} status updated to {status_update.status} by user {current_user.id}")
+        return property_obj
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating property status: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not enough permissions",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating property status: {str(e)}"
         )
-    
-    # Validate status
-    valid_statuses = ["available", "rented", "unavailable", "maintenance"]
-    if availability_status not in valid_statuses:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}",
-        )
-    
-    property = crud.property.update(
-        db, 
-        db_obj=property, 
-        obj_in={"availability_status": availability_status}
-    )
-    
-    # Create verification history entry
-    crud.verification.create_history_entry(
-        db,
-        property_id=property_id,
-        status=availability_status,
-        verified_by=f"owner_{current_user.id}",
-        notes=f"Status updated by owner to: {availability_status}"
-    )
-    
-    return property
 
 @router.post("/{property_id}/favorite", response_model=dict)
 def add_to_favorites(
